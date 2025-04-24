@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace somm {
@@ -13,17 +15,13 @@ public:
   using index_t = uint32_t;
   using offset_t = size_t;
 
-  // The last element is only for marking where next insertion is supposed to
-  // happen
-  offset_t size() const { return m_offsets.size() - 1; }
+  // Ignore m_offsets.back() since it does not contain any data until next
+  // insert_at_end()
+  offset_t size() const noexcept { return m_offsets.size() - 1; }
 
-  Base *get(index_t index) {
-    if (index >= m_offsets.size()) {
-      return nullptr;
-    }
-
+  Base *operator[](index_t index) noexcept {
     // Cast pointer to data at index to Base*
-    auto *object = reinterpret_cast<Base *>(&m_buffer.at(m_offsets.at(index)));
+    auto *object = reinterpret_cast<Base *>(&m_buffer[m_offsets[index]]);
     // Check if the vtable pointer is zeroed
     if (*reinterpret_cast<uintptr_t *>(object) == 0)
       return nullptr;
@@ -31,21 +29,19 @@ public:
     return object;
   }
 
-  void free(index_t index) {
-    if (index >= m_offsets.size()) {
-      return;
-    }
-
-    m_free_indices.emplace_back(index);
-    auto *object = reinterpret_cast<Base *>(&m_buffer.at(m_offsets.at(index)));
-    object->~Base();
-    // Invalidate address
-    *reinterpret_cast<uintptr_t *>(&m_buffer.at(m_offsets.at(index))) =
-        0; // Zeroed the vtable-pointer
+  Base *at(index_t index) {
+    check_bounds("at()", index);
+    return (*this)[index];
   }
 
-  inline offset_t align(offset_t offset, offset_t alignment) const {
-    return (offset + alignment - 1) & ~(alignment - 1);
+  void free(index_t index) {
+    check_bounds("free()", index);
+
+    m_free_indices.emplace_back(index);
+    auto *object = reinterpret_cast<Base *>(&m_buffer.at(m_offsets[index]));
+    object->~Base();
+    // Invalidate address
+    *reinterpret_cast<uintptr_t *>(object) = 0; // Zeroed the vtable-pointer
   }
 
   index_t insert(const Base &object, offset_t size, offset_t alignment) {
@@ -102,10 +98,22 @@ public:
     // Store the end offset
     m_offsets.push_back(offset_end);
 
-    return static_cast<index_t>(m_offsets.size()) - 1;
+    return static_cast<index_t>(this->size());
   }
 
 private:
+  inline void check_bounds(const char *caller, size_t index) {
+    if (index >= size()) {
+      throw std::out_of_range("somm::poly_vector::" + std::string(caller) +
+                              ": index " + std::to_string(index) +
+                              " not less than size " + std::to_string(size()));
+    }
+  }
+
+  inline offset_t align(offset_t offset, offset_t alignment) const {
+    return (offset + alignment - 1) & ~(alignment - 1);
+  }
+
   // free_indices[i] : index -> offsets[index] : offset -> buffer[offset] : data
   std::vector<unsigned char> m_buffer;
   std::vector<offset_t> m_offsets = {0};

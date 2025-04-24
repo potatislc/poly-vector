@@ -20,17 +20,20 @@ int main() {
   auto vec = somm::poly_vector<A>();
   vec.insert(B());
   vec.insert(C(), sizeof(C), alignof(C));
-  vec.get(0)->hi();
-  vec.get(1)->hi();
-  vec.get(1)->hi();
-  vec.get(1)->hi();
-  vec.get(1)->hi();
+  vec.at(0)->hi();
+  vec.at(1)->hi();
+  vec.at(1)->hi();
+  vec.at(1)->hi();
+  vec.at(1)->hi();
   vec.free(0);
+  std::cout << "Address of B: " << vec[0] << '\n';
+  std::cout << "Address of C: " << vec[1] << '\n';
   vec.free(1);
-  std::cout << vec.get(0) << std::endl;
   vec.insert(B());
   vec.insert(C());
-  vec.get(0)->hi();
-  vec.get(1)->hi();
+  vec.at(0)->hi();
+  vec.at(1)->hi();
   std::cout << "Vector Size: " << vec.size() << '\n';
+  // vec[2];
+  vec.at(2);
 }
