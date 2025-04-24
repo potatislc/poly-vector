@@ -4,26 +4,27 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace somm {
 
-template <typename Base> class poly_vector {
+template <typename Base, typename BufferOffset = size_t,
+          typename FreeIndex = size_t>
+class poly_vector {
 public:
-  using index_t = uint32_t;
-  using offset_t = size_t;
+  using index_t = size_t;
 
   // Ignore m_offsets.back() since it does not contain any data until next
   // insert_at_end()
-  offset_t size() const noexcept { return m_offsets.size() - 1; }
+  size_t size() const noexcept { return m_offsets.size() - 1; }
 
   Base *operator[](index_t index) noexcept {
-    // Cast pointer to data at index to Base*
     auto *object = reinterpret_cast<Base *>(&m_buffer[m_offsets[index]]);
     // Check if the vtable pointer is zeroed
-    if (*reinterpret_cast<uintptr_t *>(object) == 0)
+    if (*reinterpret_cast<uintptr_t *>(object) == free_space)
       return nullptr;
 
     return object;
@@ -40,34 +41,35 @@ public:
     m_free_indices.emplace_back(index);
     auto *object = reinterpret_cast<Base *>(&m_buffer.at(m_offsets[index]));
     object->~Base();
-    // Invalidate address
-    *reinterpret_cast<uintptr_t *>(object) = 0; // Zeroed the vtable-pointer
+    *reinterpret_cast<uintptr_t *>(object) =
+        free_space; // Zeroed the vtable-pointer
   }
 
-  index_t insert(const Base &object, offset_t size, offset_t alignment) {
+  index_t insert(const Base &object, BufferOffset size,
+                 BufferOffset alignment) {
     if (m_free_indices.empty())
       return insert_at_end(object, size, alignment);
 
-    // Try iserting from an index in free list
+    // Try inserting from indices in free list
     for (size_t i = 0; i < m_free_indices.size(); i++) {
       index_t index = m_free_indices.at(i);
-      offset_t offset_start = m_offsets.at(index);
-      if (offset_start != align(offset_start, alignment)) {
+      BufferOffset start = m_offsets.at(index);
+      if (start != align(start, alignment)) {
         continue;
       }
 
-      // Never out of bounds because the last index is always the byte after the
-      // end of the last object
-      offset_t offset_end = m_offsets.at(index + 1);
+      // Never out of bounds because m_offsets.back() is an extra element
+      // without an end, representing a space for the next insert_at_end()
+      BufferOffset end = m_offsets.at(index + 1);
 
-      if (offset_end - offset_start < size)
+      if (end - start < size)
         continue;
 
       m_free_indices[i] = m_free_indices.back();
       m_free_indices.pop_back();
 
-      std::memcpy(&m_buffer.at(offset_start),
-                  static_cast<const void *>(&object), size);
+      std::memcpy(&m_buffer.at(start), static_cast<const void *>(&object),
+                  size);
 
       return index;
     }
@@ -76,27 +78,23 @@ public:
   }
 
   template <typename Derived> index_t insert(const Derived &object) {
-    offset_t size = sizeof(Derived);
-    offset_t alignment = alignof(Derived);
+    BufferOffset size = sizeof(Derived);
+    BufferOffset alignment = alignof(Derived);
     return insert(object, size, alignment);
   }
 
-  index_t insert_at_end(const Base &object, offset_t size, offset_t alignment) {
+  index_t insert_at_end(const Base &object, BufferOffset size,
+                        BufferOffset alignment) {
     // The last object's end is my start
-    offset_t &offset_start = m_offsets.back();
-    // Epic rounding to next aligned spot
-    // Doesn't matter if the previous object gets some extra unused bytes at the
-    // end
-    offset_start = align(offset_start, alignment);
-    offset_t offset_end = offset_start + size;
+    BufferOffset &start = m_offsets.back();
+    // Can give the tail of the pervious element some extra buffer space. But it
+    // does not matter since it is cast to a smaller Base type when returned
+    start = align(start, alignment);
+    BufferOffset end = start + size;
 
-    // Resize byte buffer for new object
-    m_buffer.resize(offset_end);
-    // Copy object into aligned spot
-    std::memcpy(&m_buffer.at(offset_start), static_cast<const void *>(&object),
-                size);
-    // Store the end offset
-    m_offsets.push_back(offset_end);
+    m_buffer.resize(end);
+    std::memcpy(&m_buffer.at(start), static_cast<const void *>(&object), size);
+    m_offsets.push_back(end);
 
     return static_cast<index_t>(this->size());
   }
@@ -110,14 +108,17 @@ private:
     }
   }
 
-  inline offset_t align(offset_t offset, offset_t alignment) const {
+  inline BufferOffset align(BufferOffset offset, BufferOffset alignment) const {
     return (offset + alignment - 1) & ~(alignment - 1);
   }
 
   // free_indices[i] : index -> offsets[index] : offset -> buffer[offset] : data
   std::vector<unsigned char> m_buffer;
-  std::vector<offset_t> m_offsets = {0};
-  std::vector<index_t> m_free_indices;
+  static constexpr BufferOffset MAX_BUFFER_SIZE =
+      std::numeric_limits<BufferOffset>::max();
+  static constexpr size_t free_space = 0;
+  std::vector<BufferOffset> m_offsets = {0};
+  std::vector<FreeIndex> m_free_indices;
 };
 
 } // namespace somm

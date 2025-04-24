@@ -17,7 +17,7 @@ struct C : A {
 };
 
 int main() {
-  auto vec = somm::poly_vector<A>();
+  auto vec = somm::poly_vector<A, uint32_t>();
   vec.insert(B());
   vec.insert(C(), sizeof(C), alignof(C));
   vec.at(0)->hi();
