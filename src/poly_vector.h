@@ -4,9 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
-#include <typeindex>
-#include <typeinfo>
 #include <vector>
 
 namespace somm {
@@ -15,6 +12,10 @@ template <typename Base> class poly_vector {
 public:
   using index_t = uint32_t;
   using offset_t = size_t;
+
+  // The last element is only for marking where next insertion is supposed to
+  // happen
+  offset_t size() const { return m_offsets.size() - 1; }
 
   Base *get(index_t index) {
     if (index >= m_offsets.size()) {
@@ -36,12 +37,14 @@ public:
     }
 
     m_free_indices.emplace_back(index);
+    auto *object = reinterpret_cast<Base *>(&m_buffer.at(m_offsets.at(index)));
+    object->~Base();
     // Invalidate address
     *reinterpret_cast<uintptr_t *>(&m_buffer.at(m_offsets.at(index))) =
         0; // Zeroed the vtable-pointer
   }
 
-  inline offset_t align(offset_t offset, offset_t alignment) {
+  inline offset_t align(offset_t offset, offset_t alignment) const {
     return (offset + alignment - 1) & ~(alignment - 1);
   }
 
@@ -59,7 +62,7 @@ public:
 
       // Never out of bounds because the last index is always the byte after the
       // end of the last object
-      offset_t offset_end = m_offsets.at(m_free_indices.at(i + 1));
+      offset_t offset_end = m_offsets.at(index + 1);
 
       if (offset_end - offset_start < size)
         continue;
@@ -74,6 +77,12 @@ public:
     }
 
     return insert_at_end(object, size, alignment);
+  }
+
+  template <typename Derived> index_t insert(const Derived &object) {
+    offset_t size = sizeof(Derived);
+    offset_t alignment = alignof(Derived);
+    return insert(object, size, alignment);
   }
 
   index_t insert_at_end(const Base &object, offset_t size, offset_t alignment) {
@@ -94,12 +103,6 @@ public:
     m_offsets.push_back(offset_end);
 
     return static_cast<index_t>(m_offsets.size()) - 1;
-  }
-
-  template <typename Derived> index_t insert(const Derived &object) {
-    offset_t size = sizeof(Derived);
-    offset_t alignment = alignof(Derived);
-    return insert(object, size, alignment);
   }
 
 private:
