@@ -1,5 +1,6 @@
 #include "src/poly_vector.h"
 #include <iostream>
+
 struct A {
   virtual void hi() = 0;
   virtual ~A() = default;
@@ -17,7 +18,10 @@ struct C : A {
 };
 
 int main() {
-  auto vec = somm::poly_vector<A, uint32_t>();
+  auto vec = somm::poly_vector<A>();
+  auto vec2(vec);
+  vec = std::move(vec2);
+  std::cout << vec.empty() << '\n';
   vec.insert(B());
   vec.insert(C(), sizeof(C), alignof(C));
   vec.at(0)->hi();
@@ -34,6 +38,6 @@ int main() {
   vec.at(0)->hi();
   vec.at(1)->hi();
   std::cout << "Vector Size: " << vec.size() << '\n';
-  // vec[2];
-  vec.at(2);
+  std::cout << vec.empty() << '\n';
+  std::cout << sizeof(C) << " " << alignof(C) << '\n';
 }
