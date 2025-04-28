@@ -25,6 +25,8 @@ int main() {
   vec.emplace_back<B>();
   vec.push(B());
   vec.push_back(C(2));
+  vec.memplace(B(), sizeof(B), alignof(B));
+  vec.memplace_back(C(18), sizeof(C), alignof(C));
 
   for (auto &object : vec) {
     object.hi();

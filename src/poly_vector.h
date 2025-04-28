@@ -165,10 +165,6 @@ public:
   }
 
   template <typename Derived> size_t push(const Derived &object) {
-    if (m_free_indices.empty())
-      return push_back(object);
-
-    // Try inserting from indices in free list
     size_t free_size = m_free_indices.size();
     for (size_t i = 0; i < free_size; i++) {
       size_t index = m_free_indices[i];
@@ -214,10 +210,6 @@ public:
   }
 
   template <typename Derived, typename... Args> size_t emplace(Args &&...args) {
-    if (m_free_indices.empty())
-      return emplace_back<Derived, Args...>(std::forward<Args>(args)...);
-
-    // Try inserting from indices in free list
     size_t free_size = m_free_indices.size();
     for (size_t i = 0; i < free_size; i++) {
       size_t index = m_free_indices[i];
@@ -243,6 +235,52 @@ public:
     return emplace_back<Derived, Args...>(std::forward<Args>(args)...);
   }
 
+  // Memplace: Copies object into buffer without calling constructor
+
+  size_t memplace_back(const Base &object, size_t size, size_t alignment) {
+    // The last object's end is my start
+    BufferOffset &start = m_offsets.back();
+    // Can give the tail of the pervious element some extra buffer space. But
+    // it does not matter since it is cast to a smaller Base type when
+    // returned
+    start = align(start, alignment);
+    BufferOffset end = start + size;
+    if (start > end)
+      return this->size();
+
+    m_buffer.resize(end);
+    std::memcpy(&m_buffer[start], static_cast<const void *>(&object), size);
+    m_offsets.emplace_back(end);
+
+    return this->size();
+  }
+
+  size_t memplace(const Base &object, size_t size, size_t alignment) {
+    size_t free_size = m_free_indices.size();
+    for (size_t i = 0; i < free_size; i++) {
+      size_t index = m_free_indices[i];
+      BufferOffset start = m_offsets[index];
+      if (start != align(start, alignment)) {
+        continue;
+      }
+
+      // Never out of bounds because m_offsets.back() is an extra element
+      // without an end, representing a space for the next insert_at_end()
+      BufferOffset end = m_offsets[index + 1];
+
+      if (end - start < size)
+        continue;
+
+      m_free_indices[i] = m_free_indices.back();
+      m_free_indices.pop_back();
+      std::memcpy(&m_buffer[start], static_cast<const void *>(&object), size);
+
+      return index;
+    }
+
+    return memplace_back(object, size, alignment);
+  }
+
 private:
   static constexpr uintptr_t free_space = 0;
 
@@ -259,7 +297,8 @@ private:
     return (offset + alignment - 1) & ~(alignment - 1);
   }
 
-  // free_indices[i] : index -> offsets[index] : offset -> buffer[offset] : data
+  // free_indices[i] : index -> offsets[index] : offset -> buffer[offset] :
+  // data
   std::vector<unsigned char> m_buffer =
       std::vector<unsigned char>(sizeof(uintptr_t), free_space);
   std::vector<BufferOffset> m_offsets = {0};
