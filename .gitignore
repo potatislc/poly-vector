@@ -1,2 +1,6 @@
+# Directories
 /build
 /.cache
+
+# Files
+main.cpp
