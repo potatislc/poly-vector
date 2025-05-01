@@ -1,7 +1,6 @@
 #ifndef POLY_VECTOR_H
 #define POLY_VECTOR_H
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -11,16 +10,24 @@
 
 namespace somm {
 
-template <typename Base, typename BufferOffset = size_t,
-          typename FreeIndex = size_t>
-class PolyVector {
+// BufferSize = sizeof(size_t) choose the type based on if it can represent the
+// based on if it can represent the max buffer size within its bounds
+// IndexSize = sizeof(size_t) choose the type based on if it can represent the
+// max index size within its bounds
+template <typename Base, size_t MaxBufferSize = SIZE_MAX> class PolyVector {
 public:
+  using buffer_offset_t = typename std::conditional_t<
+      (MaxBufferSize <= UINT8_MAX), uint8_t,
+      typename std::conditional_t<
+          (MaxBufferSize <= UINT16_MAX), uint16_t,
+          typename std::conditional_t<(MaxBufferSize <= UINT32_MAX), uint32_t,
+                                      uint64_t>>>;
+  using free_index_t = buffer_offset_t;
+
   struct Iterator {
     Iterator(PolyVector &vector, size_t index)
         : poly_vec(vector), m_index(index) {}
 
-    // What if someone frees the index while it is referenced? Explosion?
-    // Should return a reference to an index_ptr instead when it is implemented
     Base &operator*() {
       // Failsafe for when first element is freed OOPS!
       while (m_index < poly_vec.size() && poly_vec[m_index] == nullptr) {
@@ -41,8 +48,6 @@ public:
     bool operator!=(const Iterator &other) { return m_index != other.m_index; }
 
   private:
-    // Should be a pointer to m_buffer.data(), it will break when poly_vec
-    // reallocates, but so does std::vector::iterator
     PolyVector &poly_vec;
     size_t m_index;
   };
@@ -116,9 +121,14 @@ public:
     return (*this)[index];
   }
 
-  inline bool is_free(size_t index) {
+  inline bool is_free(size_t index) const {
     check_bounds("is_free()", index);
     return (*this)[index] == nullptr;
+  }
+
+  size_t size_at(size_t index) const {
+    check_bounds("size_at()", index);
+    return m_offsets[index + 1] - m_offsets[index];
   }
 
   void free(size_t index) {
@@ -143,16 +153,19 @@ public:
     m_free_indices.clear();
   }
 
-  // TODO: memplace and memplace_back that are not templated functions and do
-  // not call a constructor
+  void shrink_to_fit() noexcept {
+    m_buffer.shrink_to_fit();
+    m_offsets.shrink_to_fit();
+    m_free_indices.shrink_to_fit();
+  }
 
   template <typename Derived> size_t push_back(const Derived &object) noexcept {
     // The last object's end is my start
-    BufferOffset &start = m_offsets.back();
+    buffer_offset_t &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But it
     // does not matter since it is cast to a smaller Base type when returned
     start = align(start, alignof(Derived));
-    BufferOffset end = start + sizeof(Derived);
+    buffer_offset_t end = start + sizeof(Derived);
     if (start > end)
       return this->size();
 
@@ -164,23 +177,20 @@ public:
     return this->size();
   }
 
-  template <typename Derived> size_t push(const Derived &object) {
-    size_t free_size = m_free_indices.size();
-    for (size_t i = 0; i < free_size; i++) {
-      size_t index = m_free_indices[i];
-      BufferOffset start = m_offsets[index];
+  template <typename Derived> size_t push(const Derived &object) noexcept {
+    for (auto &index : m_free_indices) {
+      buffer_offset_t start = m_offsets[index];
       if (start != align(start, alignof(Derived))) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
-      BufferOffset end = m_offsets[index + 1];
-
+      buffer_offset_t end = m_offsets[index + 1];
       if (end - start < sizeof(Derived))
         continue;
 
-      m_free_indices[i] = m_free_indices.back();
+      index = m_free_indices.back();
       m_free_indices.pop_back();
       new (&m_buffer[start])
           Derived(object); // Does not work if copy constructor is deleted
@@ -192,13 +202,13 @@ public:
   }
 
   template <typename Derived, typename... Args>
-  size_t emplace_back(Args &&...args) {
+  size_t emplace_back(Args &&...args) noexcept {
     // The last object's end is my start
-    BufferOffset &start = m_offsets.back();
+    buffer_offset_t &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But it
     // does not matter since it is cast to a smaller Base type when returned
     start = align(start, alignof(Derived));
-    BufferOffset end = start + sizeof(Derived);
+    buffer_offset_t end = start + sizeof(Derived);
     if (start > end)
       return this->size();
 
@@ -209,23 +219,21 @@ public:
     return size();
   }
 
-  template <typename Derived, typename... Args> size_t emplace(Args &&...args) {
-    size_t free_size = m_free_indices.size();
-    for (size_t i = 0; i < free_size; i++) {
-      size_t index = m_free_indices[i];
-      BufferOffset start = m_offsets[index];
+  template <typename Derived, typename... Args>
+  size_t emplace(Args &&...args) noexcept {
+    for (auto &index : m_free_indices) {
+      buffer_offset_t start = m_offsets[index];
       if (start != align(start, alignof(Derived))) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
-      BufferOffset end = m_offsets[index + 1];
-
+      buffer_offset_t end = m_offsets[index + 1];
       if (end - start < sizeof(Derived))
         continue;
 
-      m_free_indices[i] = m_free_indices.back();
+      index = m_free_indices.back();
       m_free_indices.pop_back();
       new (&m_buffer[start]) Derived(std::forward<Args>(args)...);
 
@@ -235,16 +243,17 @@ public:
     return emplace_back<Derived, Args...>(std::forward<Args>(args)...);
   }
 
-  // Memplace: Copies object into buffer without calling constructor
+  // Memplace: Memcopies object data into buffer without calling constructor
 
-  size_t memplace_back(const Base &object, size_t size, size_t alignment) {
+  size_t memplace_back(const Base &object, size_t size,
+                       size_t alignment) noexcept {
     // The last object's end is my start
-    BufferOffset &start = m_offsets.back();
+    buffer_offset_t &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But
     // it does not matter since it is cast to a smaller Base type when
     // returned
     start = align(start, alignment);
-    BufferOffset end = start + size;
+    buffer_offset_t end = start + size;
     if (start > end)
       return this->size();
 
@@ -255,23 +264,20 @@ public:
     return this->size();
   }
 
-  size_t memplace(const Base &object, size_t size, size_t alignment) {
-    size_t free_size = m_free_indices.size();
-    for (size_t i = 0; i < free_size; i++) {
-      size_t index = m_free_indices[i];
-      BufferOffset start = m_offsets[index];
+  size_t memplace(const Base &object, size_t size, size_t alignment) noexcept {
+    for (auto &index : m_free_indices) {
+      buffer_offset_t start = m_offsets[index];
       if (start != align(start, alignment)) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
-      BufferOffset end = m_offsets[index + 1];
-
+      buffer_offset_t end = m_offsets[index + 1];
       if (end - start < size)
         continue;
 
-      m_free_indices[i] = m_free_indices.back();
+      index = m_free_indices.back();
       m_free_indices.pop_back();
       std::memcpy(&m_buffer[start], static_cast<const void *>(&object), size);
 
@@ -292,8 +298,8 @@ private:
     }
   }
 
-  inline BufferOffset align(BufferOffset offset,
-                            BufferOffset alignment) const noexcept {
+  inline buffer_offset_t align(buffer_offset_t offset,
+                               buffer_offset_t alignment) const noexcept {
     return (offset + alignment - 1) & ~(alignment - 1);
   }
 
@@ -301,8 +307,8 @@ private:
   // data
   std::vector<unsigned char> m_buffer =
       std::vector<unsigned char>(sizeof(uintptr_t), free_space);
-  std::vector<BufferOffset> m_offsets = {0};
-  std::vector<FreeIndex> m_free_indices;
+  std::vector<buffer_offset_t> m_offsets = {0};
+  std::vector<free_index_t> m_free_indices;
 };
 
 } // namespace somm
