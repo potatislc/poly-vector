@@ -10,17 +10,10 @@
 
 namespace somm {
 
-template <typename Base, size_t MaxBufferByteSize = SIZE_MAX> class PolyVector {
+template <typename Base, typename BufferOffset = size_t> class PolyVector {
 public:
   using data_t = uintptr_t;
-  using offset_t = typename std::conditional_t<
-      (MaxBufferByteSize / sizeof(data_t) <= UINT8_MAX), uint8_t,
-      typename std::conditional_t<
-          (MaxBufferByteSize / sizeof(data_t) <= UINT16_MAX), uint16_t,
-          typename std::conditional_t<(MaxBufferByteSize / sizeof(data_t) <=
-                                       UINT32_MAX),
-                                      uint32_t, uint64_t>>>;
-  using free_index_t = offset_t;
+  using free_index_t = BufferOffset;
 
   struct Iterator {
     Iterator(PolyVector &vector, size_t index)
@@ -129,7 +122,7 @@ public:
     return (m_offsets[index + 1] - m_offsets[index]) << byte_data_shift_diff;
   }
 
-  size_t max_size() const noexcept { return sizeof(offset_t); }
+  size_t max_size() const noexcept { return sizeof(BufferOffset); }
 
   void free(size_t index) {
     check_bounds("free()", index);
@@ -152,6 +145,13 @@ public:
     m_free_indices.clear();
   }
 
+  void erase_back() noexcept {
+    if (size() == 0)
+      return;
+    m_buffer.erase(*(m_offsets.back() - 1), m_buffer.end());
+    m_offsets.erase(m_buffer.back());
+  }
+
   void shrink_to_fit() noexcept {
     m_buffer.shrink_to_fit();
     m_offsets.shrink_to_fit();
@@ -160,11 +160,11 @@ public:
 
   template <typename Derived> size_t push_back(const Derived &object) noexcept {
     // The last object's end is my start
-    offset_t &start = m_offsets.back();
+    BufferOffset &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But it
     // does not matter since it is cast to a smaller Base type when returned
     start = align(start, alignof(Derived) >> byte_data_shift_diff);
-    offset_t end = start + (sizeof(Derived) >> byte_data_shift_diff);
+    BufferOffset end = start + (sizeof(Derived) >> byte_data_shift_diff);
     if (start > end)
       return this->size();
 
@@ -178,14 +178,14 @@ public:
 
   template <typename Derived> size_t push(const Derived &object) noexcept {
     for (auto &index : m_free_indices) {
-      offset_t start = m_offsets[index];
+      BufferOffset start = m_offsets[index];
       if (start != align(start, alignof(Derived) >> byte_data_shift_diff)) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
-      offset_t end = m_offsets[index + 1];
+      BufferOffset end = m_offsets[index + 1];
       if (end - start < sizeof(Derived) >> byte_data_shift_diff)
         continue;
 
@@ -203,11 +203,11 @@ public:
   template <typename Derived, typename... Args>
   size_t emplace_back(Args &&...args) noexcept {
     // The last object's end is my start
-    offset_t &start = m_offsets.back();
+    BufferOffset &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But it
     // does not matter since it is cast to a smaller Base type when returned
     start = align(start, alignof(Derived) >> byte_data_shift_diff);
-    offset_t end = start + (sizeof(Derived) >> byte_data_shift_diff);
+    BufferOffset end = start + (sizeof(Derived) >> byte_data_shift_diff);
     if (start > end)
       return this->size();
 
@@ -221,14 +221,14 @@ public:
   template <typename Derived, typename... Args>
   size_t emplace(Args &&...args) noexcept {
     for (auto &index : m_free_indices) {
-      offset_t start = m_offsets[index];
+      BufferOffset start = m_offsets[index];
       if (start != align(start, alignof(Derived) >> byte_data_shift_diff)) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
-      offset_t end = m_offsets[index + 1];
+      BufferOffset end = m_offsets[index + 1];
       if (end - start < sizeof(Derived) >> byte_data_shift_diff)
         continue;
 
@@ -247,12 +247,12 @@ public:
   size_t memplace_back(const Base &object, size_t size,
                        size_t alignment) noexcept {
     // The last object's end is my start
-    offset_t &start = m_offsets.back();
+    BufferOffset &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But
     // it does not matter since it is cast to a smaller Base type when
     // returned
     start = align(start, alignment >> byte_data_shift_diff);
-    offset_t end = start + (size >> byte_data_shift_diff);
+    BufferOffset end = start + (size >> byte_data_shift_diff);
     if (start > end)
       return this->size();
 
@@ -265,15 +265,15 @@ public:
 
   size_t memplace(const Base &object, size_t size, size_t alignment) noexcept {
     for (auto &index : m_free_indices) {
-      offset_t start = m_offsets[index];
-      if (start != align(start, static_cast<offset_t>(alignment >>
-                                                      byte_data_shift_diff))) {
+      BufferOffset start = m_offsets[index];
+      if (start != align(start, static_cast<BufferOffset>(
+                                    alignment >> byte_data_shift_diff))) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
-      offset_t end = m_offsets[index + 1];
+      BufferOffset end = m_offsets[index + 1];
       if (end - start < (size >> byte_data_shift_diff))
         continue;
 
@@ -299,14 +299,15 @@ private:
     }
   }
 
-  static inline offset_t align(offset_t offset, offset_t alignment) noexcept {
+  static inline BufferOffset align(BufferOffset offset,
+                                   BufferOffset alignment) noexcept {
     return (offset + alignment - 1) & ~(alignment - 1);
   }
 
   // free_indices[i] : index -> offsets[index] : offset -> buffer[offset] :
   // data
   std::vector<data_t> m_buffer = {0};
-  std::vector<offset_t> m_offsets = {0};
+  std::vector<BufferOffset> m_offsets = {0};
   std::vector<free_index_t> m_free_indices;
 };
 
