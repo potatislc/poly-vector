@@ -126,7 +126,7 @@ public:
 
   size_t size_at(size_t index) const {
     check_bounds("size_at()", index);
-    return (m_offsets[index + 1] - m_offsets[index]) << 3;
+    return (m_offsets[index + 1] - m_offsets[index]) << byte_data_shift_diff;
   }
 
   size_t max_size() const noexcept { return sizeof(offset_t); }
@@ -163,8 +163,8 @@ public:
     offset_t &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But it
     // does not matter since it is cast to a smaller Base type when returned
-    start = align(start, alignof(Derived));
-    offset_t end = start + sizeof(Derived);
+    start = align(start, alignof(Derived) >> byte_data_shift_diff);
+    offset_t end = start + (sizeof(Derived) >> byte_data_shift_diff);
     if (start > end)
       return this->size();
 
@@ -179,14 +179,14 @@ public:
   template <typename Derived> size_t push(const Derived &object) noexcept {
     for (auto &index : m_free_indices) {
       offset_t start = m_offsets[index];
-      if (start != align(start, alignof(Derived))) {
+      if (start != align(start, alignof(Derived) >> byte_data_shift_diff)) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
       offset_t end = m_offsets[index + 1];
-      if (end - start < sizeof(Derived))
+      if (end - start < sizeof(Derived) >> byte_data_shift_diff)
         continue;
 
       index = m_free_indices.back();
@@ -206,8 +206,8 @@ public:
     offset_t &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But it
     // does not matter since it is cast to a smaller Base type when returned
-    start = align(start, alignof(Derived) >> 3);
-    offset_t end = start + (sizeof(Derived) >> 3);
+    start = align(start, alignof(Derived) >> byte_data_shift_diff);
+    offset_t end = start + (sizeof(Derived) >> byte_data_shift_diff);
     if (start > end)
       return this->size();
 
@@ -222,14 +222,14 @@ public:
   size_t emplace(Args &&...args) noexcept {
     for (auto &index : m_free_indices) {
       offset_t start = m_offsets[index];
-      if (start != align(start, alignof(Derived) >> 3)) {
+      if (start != align(start, alignof(Derived) >> byte_data_shift_diff)) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
       offset_t end = m_offsets[index + 1];
-      if (end - start < sizeof(Derived) >> 3)
+      if (end - start < sizeof(Derived) >> byte_data_shift_diff)
         continue;
 
       index = m_free_indices.back();
@@ -251,8 +251,8 @@ public:
     // Can give the tail of the pervious element some extra buffer space. But
     // it does not matter since it is cast to a smaller Base type when
     // returned
-    start = align(start, static_cast<offset_t>(alignment >> 3));
-    offset_t end = start + static_cast<offset_t>(size >> 3);
+    start = align(start, alignment >> byte_data_shift_diff);
+    offset_t end = start + (size >> byte_data_shift_diff);
     if (start > end)
       return this->size();
 
@@ -266,14 +266,15 @@ public:
   size_t memplace(const Base &object, size_t size, size_t alignment) noexcept {
     for (auto &index : m_free_indices) {
       offset_t start = m_offsets[index];
-      if (start != align(start, static_cast<offset_t>(alignment >> 3))) {
+      if (start != align(start, static_cast<offset_t>(alignment >>
+                                                      byte_data_shift_diff))) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
       offset_t end = m_offsets[index + 1];
-      if (end - start < (size >> 3))
+      if (end - start < (size >> byte_data_shift_diff))
         continue;
 
       index = m_free_indices.back();
@@ -288,6 +289,7 @@ public:
 
 private:
   static constexpr data_t free_space = 0;
+  static constexpr uint8_t byte_data_shift_diff = (sizeof(data_t) == 8) ? 3 : 2;
 
   inline void check_bounds(const char *caller, size_t index) {
     if (index >= size()) {
