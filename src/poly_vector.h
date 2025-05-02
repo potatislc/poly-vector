@@ -10,9 +10,12 @@
 
 namespace somm {
 
+using poly_data_t = uintptr_t; // Minimally the size of the vtable pointer
+inline constexpr uint8_t poly_data_byte_scale =
+    (sizeof(poly_data_t) == 8) ? 3 : 2;
+
 template <typename Base, typename BufferOffset = size_t> class PolyVector {
 public:
-  using data_t = uintptr_t;
   using free_index_t = BufferOffset;
 
   struct Iterator {
@@ -90,7 +93,15 @@ public:
 
   bool empty() const noexcept { return m_free_indices.size() == size(); }
 
-  data_t *data() noexcept { return m_buffer.data(); }
+  size_t max_size() const noexcept {
+    return (m_buffer.size() << poly_data_byte_scale) / sizeof(Base);
+  }
+
+  poly_data_t *buffer_data() noexcept { return m_buffer.data(); }
+
+  poly_data_t *offset_data() noexcept { return m_offsets.data(); }
+
+  poly_data_t *free_indices_data() noexcept { return m_free_indices.data(); }
 
   void clear() noexcept {
     m_buffer.clear();
@@ -101,7 +112,7 @@ public:
 
   Base *operator[](size_t index) noexcept {
     auto &buffer_data = m_buffer[m_offsets[index]];
-    if (reinterpret_cast<data_t &>(buffer_data) == free_space)
+    if (reinterpret_cast<poly_data_t &>(buffer_data) == free_space)
       return nullptr;
 
     return reinterpret_cast<Base *>(&buffer_data);
@@ -119,24 +130,27 @@ public:
 
   size_t size_at(size_t index) const {
     check_bounds("size_at()", index);
-    return (m_offsets[index + 1] - m_offsets[index]) << byte_data_shift_diff;
+    return (m_offsets[index + 1] - m_offsets[index]) << poly_data_byte_scale;
   }
 
-  size_t max_size() const noexcept { return sizeof(BufferOffset); }
+  size_t offset_at(size_t index) {
+    check_bounds("offset_at()", index);
+    return m_offsets[index];
+  }
 
   void free(size_t index) {
     check_bounds("free()", index);
     m_free_indices.emplace_back(index);
     auto *object = reinterpret_cast<Base *>(&m_buffer[m_offsets[index]]);
     object->~Base();
-    *reinterpret_cast<data_t *>(object) =
+    *reinterpret_cast<poly_data_t *>(object) =
         free_space; // Zeroed the vtable-pointer
   }
 
   void free_all() {
     for (auto &object : *this) {
       object.~Base();
-      reinterpret_cast<data_t &>(object) =
+      reinterpret_cast<poly_data_t &>(object) =
           free_space; // Zeroed the vtable-pointer
     }
 
@@ -145,6 +159,7 @@ public:
     m_free_indices.clear();
   }
 
+  // Untested
   void erase_back() noexcept {
     if (size() == 0)
       return;
@@ -159,137 +174,110 @@ public:
   }
 
   template <typename Derived> size_t push_back(const Derived &object) noexcept {
-    // The last object's end is my start
-    BufferOffset &start = m_offsets.back();
-    // Can give the tail of the pervious element some extra buffer space. But it
-    // does not matter since it is cast to a smaller Base type when returned
-    start = align(start, alignof(Derived) >> byte_data_shift_diff);
-    BufferOffset end = start + (sizeof(Derived) >> byte_data_shift_diff);
-    if (start > end)
-      return this->size();
-
-    m_buffer.resize(end);
-    new (&m_buffer[start])
-        Derived(object); // Does not work if copy constructor is deleted
-    m_offsets.emplace_back(end);
-
-    return this->size();
+    return buffer_write_back(
+        [&](BufferOffset start) {
+          new (&m_buffer[start]) Derived(
+              object); /* Does not work if copy constructor is deleted */
+        },
+        sizeof(Derived), alignof(Derived));
   }
 
   template <typename Derived> size_t push(const Derived &object) noexcept {
-    for (auto &index : m_free_indices) {
-      BufferOffset start = m_offsets[index];
-      if (start != align(start, alignof(Derived) >> byte_data_shift_diff)) {
-        continue;
-      }
-
-      // Never out of bounds because m_offsets.back() is an extra element
-      // without an end, representing a space for the next insert_at_end()
-      BufferOffset end = m_offsets[index + 1];
-      if (end - start < sizeof(Derived) >> byte_data_shift_diff)
-        continue;
-
-      index = m_free_indices.back();
-      m_free_indices.pop_back();
-      new (&m_buffer[start])
-          Derived(object); // Does not work if copy constructor is deleted
-
-      return index;
-    }
-
-    return push_back(object);
+    return buffer_write(
+        [&](BufferOffset start) {
+          new (&m_buffer[start]) Derived(
+              object); /* Does not work if copy constructor is deleted */
+        },
+        sizeof(Derived), alignof(Derived));
   }
 
   template <typename Derived, typename... Args>
   size_t emplace_back(Args &&...args) noexcept {
-    // The last object's end is my start
-    BufferOffset &start = m_offsets.back();
-    // Can give the tail of the pervious element some extra buffer space. But it
-    // does not matter since it is cast to a smaller Base type when returned
-    start = align(start, alignof(Derived) >> byte_data_shift_diff);
-    BufferOffset end = start + (sizeof(Derived) >> byte_data_shift_diff);
-    if (start > end)
-      return this->size();
-
-    m_buffer.resize(end);
-    new (&m_buffer[start]) Derived(std::forward<Args>(args)...);
-    m_offsets.emplace_back(end);
-
-    return size();
+    return buffer_write_back(
+        [&](BufferOffset start) {
+          new (&m_buffer[start]) Derived(std::forward<Args>(args)...);
+        },
+        sizeof(Derived), alignof(Derived));
   }
 
   template <typename Derived, typename... Args>
   size_t emplace(Args &&...args) noexcept {
-    for (auto &index : m_free_indices) {
-      BufferOffset start = m_offsets[index];
-      if (start != align(start, alignof(Derived) >> byte_data_shift_diff)) {
-        continue;
-      }
-
-      // Never out of bounds because m_offsets.back() is an extra element
-      // without an end, representing a space for the next insert_at_end()
-      BufferOffset end = m_offsets[index + 1];
-      if (end - start < sizeof(Derived) >> byte_data_shift_diff)
-        continue;
-
-      index = m_free_indices.back();
-      m_free_indices.pop_back();
-      new (&m_buffer[start]) Derived(std::forward<Args>(args)...);
-
-      return index;
-    }
-
-    return emplace_back<Derived, Args...>(std::forward<Args>(args)...);
+    return buffer_write(
+        [&](BufferOffset start) {
+          new (&m_buffer[start]) Derived(std::forward<Args>(args)...);
+        },
+        sizeof(Derived), alignof(Derived));
   }
 
   // Memplace: Memcopies object data into buffer without calling constructor
 
   size_t memplace_back(const Base &object, size_t size,
                        size_t alignment) noexcept {
+    return buffer_write_back(
+        [&](BufferOffset start) {
+          std::memcpy(&m_buffer[start], static_cast<const void *>(&object),
+                      size);
+        },
+        size, alignment);
+  }
+
+  size_t memplace(const Base &object, size_t size, size_t alignment) noexcept {
+    return buffer_write(
+        [&](BufferOffset start) {
+          std::memcpy(&m_buffer[start], static_cast<const void *>(&object),
+                      size);
+        },
+        size, alignment);
+  }
+
+private:
+  static constexpr poly_data_t free_space = 0;
+
+  template <typename WriterFunction>
+  size_t buffer_write_back(WriterFunction &&write, size_t size,
+                           size_t alignment) noexcept {
     // The last object's end is my start
     BufferOffset &start = m_offsets.back();
     // Can give the tail of the pervious element some extra buffer space. But
     // it does not matter since it is cast to a smaller Base type when
     // returned
-    start = align(start, alignment >> byte_data_shift_diff);
-    BufferOffset end = start + (size >> byte_data_shift_diff);
+    start = align(start, alignment >> poly_data_byte_scale);
+    BufferOffset end = start + (size >> poly_data_byte_scale);
     if (start > end)
       return this->size();
 
     m_buffer.resize(end);
-    std::memcpy(&m_buffer[start], static_cast<const void *>(&object), size);
+    write(start);
     m_offsets.emplace_back(end);
 
     return this->size();
   }
 
-  size_t memplace(const Base &object, size_t size, size_t alignment) noexcept {
+  template <typename WriterFunction>
+  size_t buffer_write(WriterFunction &&write, size_t size,
+                      size_t alignment) noexcept {
     for (auto &index : m_free_indices) {
       BufferOffset start = m_offsets[index];
       if (start != align(start, static_cast<BufferOffset>(
-                                    alignment >> byte_data_shift_diff))) {
+                                    alignment >> poly_data_byte_scale))) {
         continue;
       }
 
       // Never out of bounds because m_offsets.back() is an extra element
       // without an end, representing a space for the next insert_at_end()
       BufferOffset end = m_offsets[index + 1];
-      if (end - start < (size >> byte_data_shift_diff))
+      if (end - start < (size >> poly_data_byte_scale))
         continue;
 
       index = m_free_indices.back();
       m_free_indices.pop_back();
-      std::memcpy(&m_buffer[start], static_cast<const void *>(&object), size);
+      write(start);
 
       return index;
     }
 
-    return memplace_back(object, size, alignment);
+    return buffer_write_back(write, size, alignment);
   }
-
-private:
-  static constexpr data_t free_space = 0;
-  static constexpr uint8_t byte_data_shift_diff = (sizeof(data_t) == 8) ? 3 : 2;
 
   inline void check_bounds(const char *caller, size_t index) {
     if (index >= size()) {
@@ -306,9 +294,23 @@ private:
 
   // free_indices[i] : index -> offsets[index] : offset -> buffer[offset] :
   // data
-  std::vector<data_t> m_buffer = {0};
+  std::vector<poly_data_t> m_buffer = {0};
   std::vector<BufferOffset> m_offsets = {0};
   std::vector<free_index_t> m_free_indices;
+};
+
+template <typename Base> struct PolyPtr {
+public:
+  PolyPtr(PolyVector<Base> *vector, size_t index) {
+    m_data = vector->at(index);
+    m_byte_offset = vector->offset_at(index);
+  }
+
+  Base *get() {}
+
+private:
+  Base *m_data;
+  size_t m_byte_offset;
 };
 
 } // namespace somm
