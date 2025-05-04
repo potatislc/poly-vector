@@ -10,7 +10,8 @@
 
 namespace somm {
 
-using poly_data_t = uintptr_t; // Minimally the size of the vtable pointer
+using poly_data_t = uintptr_t; // Size of the vtable pointer defines the minimum
+                               // buffer data size and alignment
 inline constexpr uint8_t poly_data_byte_scale =
     (sizeof(poly_data_t) == 8) ? 3 : 2;
 
@@ -19,42 +20,67 @@ public:
   using free_index_t = BufferOffset;
 
   struct Iterator {
-    Iterator(PolyVector &vector, size_t index)
-        : poly_vec(vector), m_index(index) {}
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = Base;
+    using difference_type = std::ptrdiff_t;
+    using pointer = Base *;
+    using reference = Base &;
 
-    Base &operator*() {
-      // Failsafe for when first element is freed OOPS!
-      while (m_index < poly_vec.size() && poly_vec[m_index] == nullptr) {
-        ++m_index;
+    Iterator(PolyVector *vector, size_t index)
+        : poly_vec(vector), m_index(index) {
+      skip_nulls();
+    }
+
+    pointer operator->() const { return &**this; }
+
+    reference operator*() const {
+      if (m_index >= poly_vec->size()) {
+        throw std::out_of_range(
+            "somm::PolyVector::Iterator dereference: Resource at index: " +
+            std::to_string(m_index) + "is freed");
       }
 
-      return *poly_vec[m_index];
+      return *(*poly_vec)[m_index];
     };
 
     Iterator &operator++() {
-      do {
-        ++m_index;
-      } while (m_index < poly_vec.size() && poly_vec[m_index] == nullptr);
-
+      ++m_index;
+      skip_nulls();
       return *this;
     }
 
-    bool operator!=(const Iterator &other) { return m_index != other.m_index; }
+    Iterator operator++(int) {
+      Iterator temp = *this;
+      ++(*this);
+      return temp;
+    }
+
+    bool operator==(const Iterator &other) const {
+      return poly_vec == other.poly_vec && m_index == other.m_index;
+    }
+
+    bool operator!=(const Iterator &other) const { return !(*this == other); }
 
   private:
-    PolyVector &poly_vec;
+    void skip_nulls() {
+      while (m_index < poly_vec->size() && (*poly_vec)[m_index] == nullptr) {
+        ++m_index;
+      }
+    }
+
+    PolyVector *poly_vec;
     size_t m_index;
   };
 
   Iterator begin() {
     if (empty())
       return end();
-    return {*this, 0};
+    return {this, 0};
   }
 
-  Iterator end() { return {*this, size()}; }
+  Iterator end() { return {this, size()}; }
 
-  Iterator back() { return {*this, (size()) ? size() - 1 : 0}; }
+  Iterator back() { return {this, (size()) ? size() - 1 : 0}; }
 
   PolyVector() noexcept = default;
 
@@ -160,17 +186,29 @@ public:
   }
 
   // Untested
-  void erase_back() noexcept {
-    if (size() == 0)
+  void erase_back() {
+    if (size() <= 1)
       return;
-    m_buffer.erase(*(m_offsets.back() - 1), m_buffer.end());
-    m_offsets.erase(m_buffer.back());
+    m_buffer.erase(m_buffer.begin() +
+                       static_cast<std::ptrdiff_t>((m_offsets.back() - 1)),
+                   m_buffer.end());
+    m_offsets.pop_back();
   }
 
   void shrink_to_fit() noexcept {
     m_buffer.shrink_to_fit();
     m_offsets.shrink_to_fit();
     m_free_indices.shrink_to_fit();
+  }
+
+  void reserve_buffer(size_t bytes) {
+    size_t datas = bytes << poly_data_byte_scale;
+    m_buffer.reserve(datas);
+  }
+
+  void reserve_elements(size_t n) {
+    m_offsets.reserve(n);
+    m_free_indices.reserve(n);
   }
 
   template <typename Derived> size_t push_back(const Derived &object) noexcept {
@@ -281,7 +319,7 @@ private:
 
   inline void check_bounds(const char *caller, size_t index) {
     if (index >= size()) {
-      throw std::out_of_range("somm::poly_vector::" + std::string(caller) +
+      throw std::out_of_range("somm::PolyVector::" + std::string(caller) +
                               ": index " + std::to_string(index) +
                               " not less than size " + std::to_string(size()));
     }
