@@ -185,14 +185,17 @@ public:
     m_free_indices.clear();
   }
 
-  void erase_back() {
-    if (size() <= 1)
-      return;
-    m_buffer.erase(m_buffer.begin() +
-                       static_cast<std::ptrdiff_t>((m_offsets.back() - 1)),
-                   m_buffer.end());
-    m_offsets.pop_back();
-  }
+  // An evil function that goes against the philisophy of the class. A
+  // PolyVector should never shrink, no element should ever be moved or
+  // destroyed. PolyVector should only be able to grow or be cleared.
+  // void erase_back() {
+  //   if (size() <= 1)
+  //     return;
+  //   m_buffer.erase(m_buffer.begin() +
+  //                      static_cast<std::ptrdiff_t>((m_offsets.back() - 1)),
+  //                  m_buffer.end());
+  //   m_offsets.pop_back();
+  // }
 
   void shrink_to_fit() noexcept {
     m_buffer.shrink_to_fit();
@@ -334,20 +337,6 @@ private:
   std::vector<poly_data_t> m_buffer = {0};
   std::vector<BufferOffset> m_offsets = {0};
   std::vector<free_index_t> m_free_indices;
-};
-
-template <typename Base> struct PolyPtr {
-public:
-  PolyPtr(PolyVector<Base> *vector, size_t index) {
-    m_data = vector->at(index);
-    m_byte_offset = vector->offset_at(index);
-  }
-
-  Base *get() {}
-
-private:
-  Base *m_data;
-  size_t m_byte_offset;
 };
 
 } // namespace somm
