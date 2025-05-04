@@ -185,7 +185,6 @@ public:
     m_free_indices.clear();
   }
 
-  // Untested
   void erase_back() {
     if (size() <= 1)
       return;
